@@ -22,8 +22,6 @@ import {
   DialogContent,
   DialogActions,
   ListItemIcon,
-  Switch,
-  FormControlLabel,
 } from '@mui/material';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
 import { UploadFile, DarkMode, LightMode, Settings as SettingsIcon, CheckCircle, TrendingUp, Info as InfoIcon } from '@mui/icons-material';
@@ -708,7 +706,7 @@ function App() {
         
         analysisResults.requirement_matches.forEach(match => {
           // Find which group this requirement belongs to
-          for (const [groupName, groupData] of Object.entries(requirementGroups)) {
+          for (const [,, groupData] of Object.entries(requirementGroups)) {
             if (groupData.requirements.includes(match.requirement)) {
               const groupWeight = parseFloat(groupData.weight);
               const weightedScore = match.match_percentage * groupWeight;
