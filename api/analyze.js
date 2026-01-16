@@ -4,24 +4,18 @@
 
 module.exports = async (req, res) => {
   try {
-    // Nur POST erlauben
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    // Body robust parsen (Vercel liefert meist schon Objekt, manchmal String)
+    // Body robust parsen
     let body = req.body;
     if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch {
-        return res.status(400).json({ error: "Invalid JSON body" });
-      }
+      try { body = JSON.parse(body); } catch { /* ignore */ }
     }
 
     const { cvText, role, requirements } = body || {};
 
-    // Guards
     if (!cvText || typeof cvText !== "string" || cvText.trim().length < 30) {
       return res.status(400).json({ error: "cvText missing/too short" });
     }
@@ -39,27 +33,26 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "requirements missing/empty" });
     }
 
-    // API Key aus Env (fallbacks, falls du ihn anders benannt hast)
+    // API Key aus Env (Fallbacks, falls du anders benannt hast)
     const apiKey =
       process.env.GEMINI_API_KEY ||
       process.env.GOOGLE_API_KEY ||
       process.env.GENERATIVE_LANGUAGE_API_KEY;
 
-    // Model (Env optional). Wichtig: falls jemand "models/..." einträgt -> entfernen
-    let model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-    model = String(model).replace(/^models\//, "").trim();
-
-    // 🔎 Debug-Logs (Vercel Function Logs)
-    console.log("[analyze] method:", req.method);
-    console.log("[analyze] model:", model);
-    console.log("[analyze] apiKey set:", Boolean(apiKey));
-    console.log("[analyze] roleName:", roleName);
-    console.log("[analyze] requirements:", reqList.length);
-    console.log("[analyze] cvText length:", cvText.trim().length);
-
     if (!apiKey) {
       return res.status(500).json({ error: "API key not set (GEMINI_API_KEY / GOOGLE_API_KEY)" });
     }
+
+    // Wunsch-Modell (optional). Wenn nicht gesetzt, nehmen wir ein modernes Default.
+    // Wichtig: falls jemand "models/..." einträgt -> entfernen
+    let desiredModel = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    desiredModel = String(desiredModel).replace(/^models\//, "").trim();
+
+    console.log("[analyze] roleName:", roleName);
+    console.log("[analyze] requirements:", reqList.length);
+    console.log("[analyze] cvText length:", cvText.trim().length);
+    console.log("[analyze] desiredModel:", desiredModel);
+    console.log("[analyze] apiKey set:", true);
 
     const requirementsText = reqList.join("\n");
 
@@ -97,118 +90,111 @@ SEHR WICHTIG - Bewertungsfokus für Junioren:
 - Verwandte Technologien/Erfahrungen = großzügig bewerten
 - Bei Studenten/Absolventen: Potenzial > aktuelle Erfahrung
 
-WICHTIG - Formatierungsregeln für die JSON-Antwort:
-1. Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt
-2. Verwende KEINE Kommentare oder zusätzlichen Text
-3. Alle Textfelder MÜSSEN in doppelten Anführungszeichen stehen
-4. Zahlen dürfen KEINE Anführungszeichen haben
-5. Maximale Länge für Textfelder: 500 Zeichen
-
 Du MUSST genau dieses Format verwenden:
 {
   "overall_score": 75,
   "seniority_level": "Senior",
   "requirement_matches": [
-    {
-      "requirement": "SAP Core und Basis Kenntnisse",
-      "match_percentage": 80,
-      "explanation": "Kurze Erklärung des Matches"
-    }
+    { "requirement": "X", "match_percentage": 80, "explanation": "Kurz" }
   ],
-  "summary": "Kurze Zusammenfassung der Analyse",
-  "key_strengths": ["Stärke 1", "Stärke 2"],
-  "improvement_areas": ["Entwicklungspotenzial 1", "Entwicklungspotenzial 2"]
+  "summary": "Kurz",
+  "key_strengths": ["A", "B"],
+  "improvement_areas": ["C", "D"]
 }
 
 Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Match an.`;
 
     const payload = {
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 1600
-        // responseMimeType bewusst weggelassen
-      }
+      generationConfig: { temperature: 0.2, maxOutputTokens: 1600 }
     };
 
-    // Helper: call endpoint (v1beta zuerst, bei 404 fallback auf v1)
-    const callGemini = async (apiVersion) => {
-      const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
-      const r = await fetch(url, {
+    const base = "https://generativelanguage.googleapis.com/v1beta";
+
+    const fetchJson = async (url, options) => {
+      const r = await fetch(url, options);
+      const raw = await r.text();
+      let data = null;
+      try { data = raw ? JSON.parse(raw) : null; } catch {}
+      return { ok: r.ok, status: r.status, data, raw, url };
+    };
+
+    const callGenerate = async (modelName) => {
+      const url = `${base}/models/${modelName}:generateContent?key=${apiKey}`;
+      return fetchJson(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-
-      const rawText = await r.text();
-
-      let data = null;
-      try {
-        data = rawText ? JSON.parse(rawText) : null;
-      } catch {
-        // manchmal kommt HTML/Plaintext zurück
-        return {
-          ok: false,
-          status: r.status,
-          url,
-          data: null,
-          rawText
-        };
-      }
-
-      return { ok: r.ok, status: r.status, url, data, rawText };
     };
 
-    // 1) Versuch: v1beta
-    let resp = await callGemini("v1beta");
+    const listModels = async () => {
+      const url = `${base}/models?key=${apiKey}`;
+      return fetchJson(url, { method: "GET" });
+    };
 
-    // 2) Fallback: wenn 404, versuch v1 (hilft, falls deine Key/Model-Kombi dort liegt)
+    // 1) Versuch: desiredModel
+    let resp = await callGenerate(desiredModel);
+
+    // 2) Wenn 404: Modelle listen, erstes Modell mit generateContent suchen, retry
     if (!resp.ok && resp.status === 404) {
-      console.warn("[analyze] v1beta 404 -> retrying with v1");
-      resp = await callGemini("v1");
+      console.warn("[analyze] generateContent 404 -> calling ListModels");
+      const lm = await listModels();
+
+      if (!lm.ok) {
+        console.error("[analyze] ListModels failed:", lm.status, lm.raw?.slice(0, 500));
+        return res.status(502).json({
+          error: "ListModels failed",
+          status: lm.status,
+          raw: lm.raw?.slice(0, 2000)
+        });
+      }
+
+      const models = lm.data?.models || [];
+      const genModel = models.find(m =>
+        Array.isArray(m.supportedGenerationMethods) &&
+        m.supportedGenerationMethods.includes("generateContent")
+      );
+
+      if (!genModel?.name) {
+        // Sehr typisch: nur Embedding-Modelle vorhanden
+        const names = models.map(m => m.name).slice(0, 50);
+        return res.status(403).json({
+          error: "Your API key has no access to text generation models (generateContent).",
+          hint: "Create/use a Gemini API key from Google AI Studio (Gemini API) or adjust your account/project provisioning.",
+          available_models: names
+        });
+      }
+
+      const discovered = String(genModel.name).replace(/^models\//, "");
+      console.warn("[analyze] discovered generateContent model:", discovered);
+      resp = await callGenerate(discovered);
     }
 
-    // Fehlerbehandlung
+    // 3) Fehler rausgeben
     if (!resp.ok) {
       const msg = resp?.data?.error?.message;
       console.error("[analyze] Gemini error status:", resp.status);
       console.error("[analyze] Gemini url:", resp.url);
       console.error("[analyze] Gemini error message:", msg || "(no message)");
-      console.error(
-        "[analyze] Gemini error body head:",
-        JSON.stringify(resp.data || resp.rawText || "").slice(0, 1500)
-      );
-
-      // Wenn non-json zurückkam
-      if (!resp.data) {
-        return res.status(502).json({
-          error: "Gemini returned non-JSON",
-          status: resp.status,
-          url: resp.url,
-          raw: String(resp.rawText || "").slice(0, 2000)
-        });
-      }
+      console.error("[analyze] Gemini error body head:", JSON.stringify(resp.data || resp.raw || "").slice(0, 1500));
 
       return res.status(resp.status).json({
         error: "Gemini request failed",
         status: resp.status,
         url: resp.url,
         message: msg,
-        details: resp.data
+        details: resp.data || resp.raw?.slice(0, 2000)
       });
     }
 
-    const data = resp.data;
-
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    // 4) Content extrahieren
+    const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text || typeof text !== "string") {
-      return res.status(502).json({
-        error: "Gemini returned empty content",
-        raw: data
-      });
+      return res.status(502).json({ error: "Gemini returned empty content", raw: resp.data });
     }
 
-    // JSON robust extrahieren
+    // 5) JSON robust extrahieren
     let parsed;
     try {
       const start = text.indexOf("{");
@@ -216,30 +202,20 @@ Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Matc
       const jsonStr = start >= 0 && end > start ? text.slice(start, end) : text;
       parsed = JSON.parse(jsonStr);
     } catch {
-      return res.status(502).json({
-        error: "Model did not return valid JSON",
-        raw: text
-      });
+      return res.status(502).json({ error: "Model did not return valid JSON", raw: text });
     }
 
-    // Minimal-Validierung fürs Frontend
     if (
       typeof parsed?.overall_score !== "number" ||
       !parsed?.seniority_level ||
       !Array.isArray(parsed?.requirement_matches)
     ) {
-      return res.status(502).json({
-        error: "Invalid response structure from model",
-        raw: parsed
-      });
+      return res.status(502).json({ error: "Invalid response structure from model", raw: parsed });
     }
 
     return res.status(200).json(parsed);
   } catch (e) {
     console.error("[analyze] internal error:", e);
-    return res.status(500).json({
-      error: "Internal server error",
-      details: String(e?.message || e)
-    });
+    return res.status(500).json({ error: "Internal server error", details: String(e?.message || e) });
   }
 };
