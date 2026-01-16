@@ -377,7 +377,10 @@ const performCVAnalysis = async (file, requirements, role, cvText, weights) => {
   return data;
   } catch (error) {
     console.error("❌ Analysis error:", error);
-    throw new Error("Fehler bei der CV-Analyse: " + error.message);
+    throw new Error(
+      `${data?.error || "Analyse fehlgeschlagen"} (${response.status}) - ` +
+      `${JSON.stringify(data?.details || data, null, 2)}`
+    );
   }
 };
 
