@@ -357,15 +357,24 @@ const performCVAnalysis = async (file, requirements, role, cvText, weights) => {
       }),
     });
 
-    const data = await response.json();
+  const raw = await response.text();
 
-    if (!response.ok) {
-      console.error("❌ /api/analyze failed:", data);
-      throw new Error(data?.error || "Analyse fehlgeschlagen");
-    }
+  let data;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.error("❌ Non-JSON response from /api/analyze:", raw);
+    throw new Error(
+      `API returned non-JSON (${response.status}): ${raw?.slice(0, 300) || "<empty>"}`
+    );
+  }
 
-    // 3) data ist schon dein Analyse-JSON
-    return data;
+  if (!response.ok) {
+    console.error("❌ /api/analyze failed:", data);
+    throw new Error(data?.error || `Analyse fehlgeschlagen (${response.status})`);
+  }
+
+  return data;
   } catch (error) {
     console.error("❌ Analysis error:", error);
     throw new Error("Fehler bei der CV-Analyse: " + error.message);
