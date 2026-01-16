@@ -1,6 +1,6 @@
 // api/analyze.js
 // Vercel Serverless Function (Node)
-// Erwartet POST JSON: { cvText: string, role: string|object, requirements: string[], weights?: object }
+// Erwartet POST JSON: { cvText: string, role: string|object, requirements: string[] }
 
 module.exports = async (req, res) => {
   try {
@@ -9,7 +9,6 @@ module.exports = async (req, res) => {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    // Body auslesen
     const { cvText, role, requirements } = req.body || {};
 
     // Guards
@@ -32,14 +31,22 @@ module.exports = async (req, res) => {
 
     // Gemini Key aus Env
     const apiKey = process.env.GEMINI_API_KEY;
+    const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+
+    // 🔎 Debug-Logs (in Vercel Functions Logs sichtbar)
+    console.log("[analyze] method:", req.method);
+    console.log("[analyze] model:", model);
+    console.log("[analyze] apiKey set:", Boolean(apiKey));
+    console.log("[analyze] roleName:", roleName);
+    console.log("[analyze] requirements:", reqList.length);
+    console.log("[analyze] cvText length:", cvText.trim().length);
+
     if (!apiKey) {
       return res.status(500).json({ error: "GEMINI_API_KEY not set" });
     }
 
-    const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
     const requirementsText = reqList.join("\n");
 
-    // Prompt (dein altes Format)
     const prompt = `Antworte AUSSCHLIESSLICH als valides JSON (kein Markdown, kein Text drumherum).
 
 Analysiere den folgenden Lebenslauf für die Position "${roleName}" anhand der Stellenanforderungen. Bewerte die PASSGENAUIGKEIT zur ausgeschriebenen Stelle.
@@ -99,9 +106,9 @@ Du MUSST genau dieses Format verwenden:
 
 Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Match an.`;
 
-    // Gemini Request
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+    // Request an Gemini
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -109,16 +116,30 @@ Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Matc
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 1600,
-          // Das hilft stark, wirklich JSON zu bekommen:
-          responseMimeType: "application/json"
+          maxOutputTokens: 1600
+          // ❌ responseMimeType erstmal raus, weil das teils 400 verursacht
         }
       })
     });
 
-    const data = await r.json().catch(() => null);
+    const rawText = await r.text();
+    let data = null;
+
+    try {
+      data = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      // wenn Google mal HTML/Plaintext liefert
+      console.error("[analyze] non-json from Gemini:", rawText?.slice(0, 500));
+      return res.status(502).json({
+        error: "Gemini returned non-JSON",
+        status: r.status,
+        raw: rawText?.slice(0, 2000)
+      });
+    }
 
     if (!r.ok) {
+      console.error("[analyze] Gemini error status:", r.status);
+      console.error("[analyze] Gemini error body:", JSON.stringify(data)?.slice(0, 1500));
       return res.status(r.status).json({
         error: "Gemini request failed",
         status: r.status,
@@ -134,7 +155,7 @@ Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Matc
       });
     }
 
-    // JSON robust extrahieren (falls doch drumherum Text kommt)
+    // JSON robust extrahieren
     let parsed;
     try {
       const start = text.indexOf("{");
@@ -162,6 +183,7 @@ Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Matc
 
     return res.status(200).json(parsed);
   } catch (e) {
+    console.error("[analyze] internal error:", e);
     return res.status(500).json({
       error: "Internal server error",
       details: String(e?.message || e)
