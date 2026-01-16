@@ -351,38 +351,35 @@ const performCVAnalysis = async (file, requirements, role, cvText, weights) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         cvText: cvTextContent,
-        role,          // z.B. "developer"
-        requirements,  // array von strings
-        weights,       // dein weights object
+        role,
+        requirements,
+        weights,
       }),
     });
 
-  const raw = await response.text();
+    // erst text lesen, dann JSON versuchen
+    const raw = await response.text();
 
-  let data;
-  try {
-    data = raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    console.error("❌ Non-JSON response from /api/analyze:", raw);
-    throw new Error(
-      `API returned non-JSON (${response.status}): ${raw?.slice(0, 300) || "<empty>"}`
-    );
-  }
+    let data;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      console.error("❌ Non-JSON response from /api/analyze:", raw);
+      throw new Error(
+        `API returned non-JSON (${response.status}): ${raw?.slice(0, 300) || "<empty>"}`
+      );
+    }
 
-  if (!response.ok) {
-    console.error("❌ /api/analyze failed:", data);
-    throw new Error(data?.error || `Analyse fehlgeschlagen (${response.status})`);
-  }
+    if (!response.ok) {
+      console.error("❌ /api/analyze failed:", data);
+      throw new Error(
+        `${data?.error || "Analyse fehlgeschlagen"} (${response.status}) - ` +
+          `${JSON.stringify(data?.details || data, null, 2)}`
+      );
+    }
 
-  return data;
-  } catch (error) {
-    console.error("❌ Analysis error:", error);
-    throw new Error(
-      `${data?.error || "Analyse fehlgeschlagen"} (${response.status}) - ` +
-      `${JSON.stringify(data?.details || data, null, 2)}`
-    );
-  }
-};
+    return data;
+
 
 
 // Main App Component
