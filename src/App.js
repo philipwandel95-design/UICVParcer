@@ -328,24 +328,9 @@ const extractTextFromPDF = async (file) => {
 // CV Analysis Functions - API-based approach
 const performCVAnalysis = async (file, requirements, role, cvText, weights) => {
   try {
-    console.log("🚀 Starting CV analysis (via /api/analyze)...");
+    let cvTextContent = cvText?.trim();
+    if (!cvTextContent) throw new Error("CV-Text fehlt");
 
-    // 1) CV-Text bestimmen
-    let cvTextContent;
-    if (cvText && cvText.trim()) {
-      console.log("📄 Using manually entered CV text...");
-      cvTextContent = cvText.trim();
-    } else {
-      if (!file) throw new Error("Bitte eine PDF auswählen oder CV-Text eingeben.");
-      console.log("📄 Extracting text from PDF...");
-      cvTextContent = await extractTextFromPDF(file);
-    }
-
-    if (!cvTextContent || cvTextContent.trim().length < 30) {
-      throw new Error("CV-Text ist zu kurz (mind. 30 Zeichen).");
-    }
-
-    // 2) Serverless Endpoint aufrufen (Gemini läuft in api/analyze.js)
     const response = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -357,29 +342,25 @@ const performCVAnalysis = async (file, requirements, role, cvText, weights) => {
       }),
     });
 
-    // erst text lesen, dann JSON versuchen
     const raw = await response.text();
 
     let data;
     try {
       data = raw ? JSON.parse(raw) : null;
-    } catch (e) {
-      console.error("❌ Non-JSON response from /api/analyze:", raw);
-      throw new Error(
-        `API returned non-JSON (${response.status}): ${raw?.slice(0, 300) || "<empty>"}`
-      );
+    } catch {
+      throw new Error(`API returned non-JSON (${response.status})`);
     }
 
     if (!response.ok) {
-      console.error("❌ /api/analyze failed:", data);
-      throw new Error(
-        `${data?.error || "Analyse fehlgeschlagen"} (${response.status}) - ` +
-          `${JSON.stringify(data?.details || data, null, 2)}`
-      );
+      throw new Error(`${data?.error || "Analyse fehlgeschlagen"} (${response.status})`);
     }
 
     return data;
-
+  } catch (error) {
+    console.error("❌ Analysis error:", error);
+    throw new Error("Fehler bei der CV-Analyse: " + error.message);
+  }
+};
 
 
 // Main App Component
