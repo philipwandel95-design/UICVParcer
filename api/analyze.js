@@ -9,7 +9,17 @@ module.exports = async (req, res) => {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    const { cvText, role, requirements } = req.body || {};
+    // Body robust parsen (Vercel liefert meist schon Objekt, manchmal String)
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        return res.status(400).json({ error: "Invalid JSON body" });
+      }
+    }
+
+    const { cvText, role, requirements } = body || {};
 
     // Guards
     if (!cvText || typeof cvText !== "string" || cvText.trim().length < 30) {
@@ -29,11 +39,17 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "requirements missing/empty" });
     }
 
-    // Gemini Key aus Env
-    const apiKey = process.env.GEMINI_API_KEY;
-    const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    // API Key aus Env (fallbacks, falls du ihn anders benannt hast)
+    const apiKey =
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.GENERATIVE_LANGUAGE_API_KEY;
 
-    // 🔎 Debug-Logs (in Vercel Functions Logs sichtbar)
+    // Model (Env optional). Wichtig: falls jemand "models/..." einträgt -> entfernen
+    let model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    model = String(model).replace(/^models\//, "").trim();
+
+    // 🔎 Debug-Logs (Vercel Function Logs)
     console.log("[analyze] method:", req.method);
     console.log("[analyze] model:", model);
     console.log("[analyze] apiKey set:", Boolean(apiKey));
@@ -42,7 +58,7 @@ module.exports = async (req, res) => {
     console.log("[analyze] cvText length:", cvText.trim().length);
 
     if (!apiKey) {
-      return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+      return res.status(500).json({ error: "API key not set (GEMINI_API_KEY / GOOGLE_API_KEY)" });
     }
 
     const requirementsText = reqList.join("\n");
@@ -106,46 +122,83 @@ Du MUSST genau dieses Format verwenden:
 
 Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Match an.`;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const payload = {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 1600
+        // responseMimeType bewusst weggelassen
+      }
+    };
 
-    // Request an Gemini
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 1600
-          // ❌ responseMimeType erstmal raus, weil das teils 400 verursacht
-        }
-      })
-    });
-
-    const rawText = await r.text();
-    let data = null;
-
-    try {
-      data = rawText ? JSON.parse(rawText) : null;
-    } catch {
-      // wenn Google mal HTML/Plaintext liefert
-      console.error("[analyze] non-json from Gemini:", rawText?.slice(0, 500));
-      return res.status(502).json({
-        error: "Gemini returned non-JSON",
-        status: r.status,
-        raw: rawText?.slice(0, 2000)
+    // Helper: call endpoint (v1beta zuerst, bei 404 fallback auf v1)
+    const callGemini = async (apiVersion) => {
+      const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
       });
+
+      const rawText = await r.text();
+
+      let data = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        // manchmal kommt HTML/Plaintext zurück
+        return {
+          ok: false,
+          status: r.status,
+          url,
+          data: null,
+          rawText
+        };
+      }
+
+      return { ok: r.ok, status: r.status, url, data, rawText };
+    };
+
+    // 1) Versuch: v1beta
+    let resp = await callGemini("v1beta");
+
+    // 2) Fallback: wenn 404, versuch v1 (hilft, falls deine Key/Model-Kombi dort liegt)
+    if (!resp.ok && resp.status === 404) {
+      console.warn("[analyze] v1beta 404 -> retrying with v1");
+      resp = await callGemini("v1");
     }
 
-    if (!r.ok) {
-      console.error("[analyze] Gemini error status:", r.status);
-      console.error("[analyze] Gemini error body:", JSON.stringify(data)?.slice(0, 1500));
-      return res.status(r.status).json({
+    // Fehlerbehandlung
+    if (!resp.ok) {
+      const msg = resp?.data?.error?.message;
+      console.error("[analyze] Gemini error status:", resp.status);
+      console.error("[analyze] Gemini url:", resp.url);
+      console.error("[analyze] Gemini error message:", msg || "(no message)");
+      console.error(
+        "[analyze] Gemini error body head:",
+        JSON.stringify(resp.data || resp.rawText || "").slice(0, 1500)
+      );
+
+      // Wenn non-json zurückkam
+      if (!resp.data) {
+        return res.status(502).json({
+          error: "Gemini returned non-JSON",
+          status: resp.status,
+          url: resp.url,
+          raw: String(resp.rawText || "").slice(0, 2000)
+        });
+      }
+
+      return res.status(resp.status).json({
         error: "Gemini request failed",
-        status: r.status,
-        details: data
+        status: resp.status,
+        url: resp.url,
+        message: msg,
+        details: resp.data
       });
     }
+
+    const data = resp.data;
 
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text || typeof text !== "string") {
@@ -162,7 +215,7 @@ Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Matc
       const end = text.lastIndexOf("}") + 1;
       const jsonStr = start >= 0 && end > start ? text.slice(start, end) : text;
       parsed = JSON.parse(jsonStr);
-    } catch (err) {
+    } catch {
       return res.status(502).json({
         error: "Model did not return valid JSON",
         raw: text
