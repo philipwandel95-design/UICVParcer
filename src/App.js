@@ -35,16 +35,7 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 // Set up PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-// API configuration - using the same key as reference project
-const OPENAI_API_KEY = process.env.REACT_APP_OPENAI_API_KEY;
-const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-// Debug logging for environment variables
-console.log('🔍 Environment check:');
-console.log('🔍 REACT_APP_OPENAI_API_KEY exists:', !!process.env.REACT_APP_OPENAI_API_KEY);
-console.log('🔍 REACT_APP_OPENAI_API_KEY length:', process.env.REACT_APP_OPENAI_API_KEY ? process.env.REACT_APP_OPENAI_API_KEY.length : 'N/A');
-console.log('🔍 OPENAI_API_KEY constant:', OPENAI_API_KEY ? `${OPENAI_API_KEY.substring(0, 20)}...` : 'MISSING');
-console.log('🔍 OPENROUTER_BASE_URL:', OPENROUTER_BASE_URL);
 
 // Predefined requirements for different roles
 const jobRoleRequirements = {
@@ -335,194 +326,52 @@ const extractTextFromPDF = async (file) => {
 };
 
 // CV Analysis Functions - API-based approach
-const performCVAnalysis = async (file, requirements, role, cvText) => {
+const performCVAnalysis = async (file, requirements, role, cvText, weights) => {
   try {
-    console.log('🚀 Starting CV analysis...');
-    console.log('📁 File:', file.name, 'Size:', file.size, 'Type:', file.type);
-    console.log('🔑 API Key length:', OPENAI_API_KEY ? OPENAI_API_KEY.length : 'MISSING');
-    console.log('🌐 Base URL:', OPENROUTER_BASE_URL);
-    console.log('📋 Requirements count:', requirements.length);
-    console.log('👤 Role:', role);
-    
-    // Get CV text - either from manual input or PDF extraction
+    console.log("🚀 Starting CV analysis (via /api/analyze)...");
+
+    // 1) CV-Text bestimmen
     let cvTextContent;
     if (cvText && cvText.trim()) {
-      console.log('📄 Using manually entered CV text...');
-      cvTextContent = cvText;
+      console.log("📄 Using manually entered CV text...");
+      cvTextContent = cvText.trim();
     } else {
-      console.log('📄 Extracting text from PDF...');
+      if (!file) throw new Error("Bitte eine PDF auswählen oder CV-Text eingeben.");
+      console.log("📄 Extracting text from PDF...");
       cvTextContent = await extractTextFromPDF(file);
     }
-    
-    console.log('📄 CV text length:', cvTextContent.length);
-    console.log('📄 Text preview:', cvTextContent.substring(0, 500) + '...');
-    
-    // Use AI API for comprehensive analysis like in the reference project
-    const requirementsText = requirements.join('\n');
-    
-    const prompt = `Analysiere den folgenden Lebenslauf für die Position ${role} anhand der Stellenanforderungen. Bewerte die PASSGENAUIGKEIT zur ausgeschriebenen Stelle.
 
-LEBENSLAUF TEXT:
-${cvTextContent}
+    if (!cvTextContent || cvTextContent.trim().length < 30) {
+      throw new Error("CV-Text ist zu kurz (mind. 30 Zeichen).");
+    }
 
-STELLENANFORDERUNGEN:
-${requirementsText}
-
-WICHTIG - Bewertungsrichtlinien für Passgenauigkeit:
-
-Für JUNIOREN (0-3 Jahre, Studenten, Berufseinsteiger):
-- Gib 80-100% wenn:
-  * Studiert/studierte etwas Relevantes ODER
-  * Hat Praktikum/Werkstudent im Bereich ODER
-  * Zeigt Interesse am Technologiebereich
-- Gib 60-79% wenn:
-  * Hat technischen Hintergrund ODER
-  * Zeigt Interesse an ähnlichen Bereichen
-- Gib 50-59% wenn:
-  * Hat irgendeine technische Erfahrung ODER
-  * Studiert etwas Technisches
-- Unter 50% NUR wenn absolut keine Berührungspunkte
-
-SEHR WICHTIG - Bewertungsfokus für Junioren:
-- Sei SEHR GROSSZÜGIG bei der Bewertung!
-- Jeder Berührungspunkt mit einer Technologie = mindestens 50%
-- Relevantes Studium = mindestens 70% pro Anforderung
-- Praktika/Werkstudent = mindestens 80% in dem Bereich
-- Interesse/Motivation = stark positiv werten
-- Verwandte Technologien/Erfahrungen = großzügig bewerten
-- Bei Studenten/Absolventen: Potenzial > aktuelle Erfahrung
-
-WICHTIG - Formatierungsregeln für die JSON-Antwort:
-1. Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt
-2. Verwende KEINE Kommentare oder zusätzlichen Text
-3. Alle Textfelder MÜSSEN in doppelten Anführungszeichen stehen
-4. Zahlen dürfen KEINE Anführungszeichen haben
-5. Maximale Länge für Textfelder: 500 Zeichen
-
-WICHTIG - Du MUSST genau dieses Format verwenden:
-{
-    "overall_score": 75,
-    "seniority_level": "Senior",
-    "requirement_matches": [
-        {
-            "requirement": "SAP Core und Basis Kenntnisse",
-            "match_percentage": 80,
-            "explanation": "Kurze Erklärung des Matches"
-        }
-    ],
-    "summary": "Kurze Zusammenfassung der Analyse",
-    "key_strengths": [
-        "Stärke 1",
-        "Stärke 2"
-    ],
-    "improvement_areas": [
-        "Entwicklungspotenzial 1",
-        "Entwicklungspotenzial 2"
-    ]
-}
-
-Bewerte jede Anforderung einzeln und gib einen Prozentsatz (0-100) für den Match an.`;
-
-    const requestBody = {
-      model: 'deepseek/deepseek-r1-0528:free',
-      messages: [
-        {
-          role: 'system',
-          content: 'Du bist ein CV-Analyse-Assistent. Du MUSST AUSSCHLIESSLICH mit einem validen JSON-Objekt antworten.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.3,
-      max_tokens: 1500  // Reduced to stay within free tier limits
-    };
-
-    console.log('📤 Request body:', JSON.stringify(requestBody, null, 2));
-    console.log('📤 Making API call to:', `${OPENROUTER_BASE_URL}/chat/completions`);
-    console.log('📤 Headers:', {
-      'Authorization': `Bearer ${OPENAI_API_KEY ? OPENAI_API_KEY.substring(0, 20) + '...' : 'MISSING'}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'http://localhost:3000',
-      'X-Title': 'CV Parser'
+    // 2) Serverless Endpoint aufrufen (Gemini läuft in api/analyze.js)
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cvText: cvTextContent,
+        role,          // z.B. "developer"
+        requirements,  // array von strings
+        weights,       // dein weights object
+      }),
     });
 
-    // Add fetch options with more debugging
-    const fetchOptions = {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'CV Parser'
-      },
-      body: JSON.stringify(requestBody)
-    };
-    
-    console.log('📤 Fetch options:', fetchOptions);
-    console.log('📤 Request body size:', JSON.stringify(requestBody).length, 'characters');
-
-    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, fetchOptions);
-
-    console.log('📥 Response status:', response.status);
-    console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
-    
-    if (!response.ok) {
-      console.error('❌ API call failed with status:', response.status);
-      const errorText = await response.text();
-      console.error('❌ Error response body:', errorText);
-      throw new Error(`API call failed: ${response.status} - ${errorText}`);
-    }
-
     const data = await response.json();
-    console.log('📥 Response data:', JSON.stringify(data, null, 2));
-    const aiResponse = data.choices[0].message.content;
-    console.log('🤖 AI response content:', aiResponse);
-    
-    try {
-      // Parse the AI response
-      const jsonStart = aiResponse.indexOf('{');
-      const jsonEnd = aiResponse.lastIndexOf('}') + 1;
-      
-      if (jsonStart === -1 || jsonEnd === 0) {
-        throw new Error('No JSON response from AI');
-      }
-      
-      const jsonContent = aiResponse.substring(jsonStart, jsonEnd);
-      const analysisResults = JSON.parse(jsonContent);
-      
-      // Validate the response structure
-      if (!analysisResults.overall_score || !analysisResults.requirement_matches) {
-        throw new Error('Invalid AI response structure');
-      }
-      
-      return analysisResults;
-      
-    } catch (parseError) {
-      console.error('JSON parsing error:', parseError);
-      // Fallback to basic analysis
-      return {
-        overall_score: 50,
-        seniority_level: "Professional",
-        requirement_matches: requirements.map(req => ({
-          requirement: req,
-          match_percentage: 50,
-          explanation: "Basis-Analyse durchgeführt"
-        })),
-        summary: "Automatische Analyse mit Fallback-Methode",
-        key_strengths: ["Solide Grundlagen"],
-        improvement_areas: ["Weiterer Ausbau der Fähigkeiten"]
-      };
+
+    if (!response.ok) {
+      console.error("❌ /api/analyze failed:", data);
+      throw new Error(data?.error || "Analyse fehlgeschlagen");
     }
-    
+
+    // 3) data ist schon dein Analyse-JSON
+    return data;
   } catch (error) {
-    console.error('❌ Analysis error:', error);
-    console.error('❌ Error stack:', error.stack);
-    console.error('❌ Error message:', error.message);
-    throw new Error('Fehler bei der CV-Analyse über API: ' + error.message);
+    console.error("❌ Analysis error:", error);
+    throw new Error("Fehler bei der CV-Analyse: " + error.message);
   }
 };
+
 
 // Main App Component
 function App() {
@@ -696,9 +545,14 @@ function App() {
       }
       
              // Perform CV analysis using AI API
-       const analysisResults = await performCVAnalysis(selectedFile, allRequirements, selectedRole, cvText);
-      
-      // Apply group weights to the results
+      const analysisResults = await performCVAnalysis(
+        selectedFile,
+        allRequirements,
+        selectedRole,
+        cvText,
+        weights
+      );      
+            // Apply group weights to the results
       if (requirementGroups) {
         const weightedMatches = [];
         let weightedOverallScore = 0;
@@ -706,7 +560,7 @@ function App() {
         
         analysisResults.requirement_matches.forEach(match => {
           // Find which group this requirement belongs to
-          for (const [,, groupData] of Object.entries(requirementGroups)) {
+          for (const [, groupData] of Object.entries(requirementGroups)) {
             if (groupData.requirements.includes(match.requirement)) {
               const groupWeight = parseFloat(groupData.weight);
               const weightedScore = match.match_percentage * groupWeight;
@@ -1033,43 +887,7 @@ function App() {
                    {loading ? <CircularProgress size={24} /> : 'Analyse starten'}
                  </Button>
                  
-                 <Button
-                   variant="outlined"
-                   onClick={async () => {
-                     console.log('🧪 Testing API connection...');
-                     try {
-                       const testResponse = await fetch(`${OPENROUTER_BASE_URL}/models`, {
-                         method: 'GET',
-                         headers: {
-                           'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                           'HTTP-Referer': 'http://localhost:3000',
-                           'X-Title': 'CV Parser'
-                         }
-                       });
-                       console.log('🧪 Test response status:', testResponse.status);
-                       if (testResponse.ok) {
-                         const testData = await testResponse.json();
-                         console.log('🧪 Available models:', testData);
-                         alert('✅ API connection successful! Check console for models.');
-                       } else {
-                         const errorText = await testResponse.text();
-                         console.error('🧪 Test failed:', errorText);
-                         alert(`❌ API test failed: ${testResponse.status} - ${errorText}`);
-                       }
-                     } catch (error) {
-                       console.error('🧪 Test error:', error);
-                       alert(`❌ API test error: ${error.message}`);
-                     }
-                   }}
-                   size="small"
-                   sx={{
-                     mt: 1,
-                     py: 1,
-                     width: '100%',
-                   }}
-                 >
-                   🧪 Test API Connection
-                 </Button>
+ 
             </Paper>
           </Grid>
         </Grid>
